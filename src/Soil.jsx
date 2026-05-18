@@ -42,8 +42,9 @@ const METRIC_META = {
     label: 'Solar Current',
     description: 'Current from solar input',
     kind: 'numeric',
-    unit: 'A',
-    precision: 3,
+    unit: 'mA',
+    precision: 1,
+    transform: (value) => value * 1000,
   },
   Solar_Power: {
     label: 'Solar Power',
@@ -85,8 +86,9 @@ function formatMetricValue(metric, rawValue) {
     return String(rawValue ?? '--')
   }
 
-  const precision = metric.precision ?? (Number.isInteger(numericValue) ? 0 : 2)
-  return `${numericValue.toFixed(precision)}${metric.unit ? ` ${metric.unit}` : ''}`
+  const displayValue = metric.transform ? metric.transform(numericValue) : numericValue
+  const precision = metric.precision ?? (Number.isInteger(displayValue) ? 0 : 2)
+  return `${displayValue.toFixed(precision)}${metric.unit ? ` ${metric.unit}` : ''}`
 }
 
 function getMetricCode(metric) {
@@ -149,7 +151,7 @@ function getSoilAutomationState(soilValue) {
     }
   }
 
-  if (soilValue >= 0 && soilValue <= 40) {
+  if (soilValue <= 40) {
     return {
       label: 'Dry',
       relayValue: 1,
@@ -158,29 +160,11 @@ function getSoilAutomationState(soilValue) {
     }
   }
 
-  if (soilValue >= 41 && soilValue <= 60) {
-    return {
-      label: 'Normal',
-      relayValue: 0,
-      tone: 'normal',
-      message: 'Soil is normal. Pump remains off.',
-    }
-  }
-
-  if (soilValue >= 61 && soilValue <= 100) {
-    return {
-      label: 'Wet',
-      relayValue: 0,
-      tone: 'wet',
-      message: 'Soil is wet. Pump remains off.',
-    }
-  }
-
   return {
-    label: 'Out of range',
+    label: 'Wet',
     relayValue: 0,
-    tone: 'idle',
-    message: 'Soil reading is outside the expected 0 to 100 range.',
+    tone: 'wet',
+    message: 'Soil is above 40. Pump turned off automatically.',
   }
 }
 
@@ -252,10 +236,16 @@ function ChartCard({ metric, points }) {
     : ''
 
   const latestPoint = points.at(-1)
+  const highestDisplayValue = metric.transform ? metric.transform(actualMaxValue) : actualMaxValue
+  const lowestDisplayValue = metric.transform ? metric.transform(actualMinValue) : actualMinValue
   const highestLabel =
-    metric.kind === 'status' ? 'Pump On' : actualMaxValue.toFixed(metric.precision ?? 2)
+    metric.kind === 'status'
+      ? 'Pump On'
+      : `${highestDisplayValue.toFixed(metric.precision ?? 2)}${metric.unit ? ` ${metric.unit}` : ''}`
   const lowestLabel =
-    metric.kind === 'status' ? 'Pump Off' : actualMinValue.toFixed(metric.precision ?? 2)
+    metric.kind === 'status'
+      ? 'Pump Off'
+      : `${lowestDisplayValue.toFixed(metric.precision ?? 2)}${metric.unit ? ` ${metric.unit}` : ''}`
 
   return (
     <article className="chart-card">
@@ -323,7 +313,6 @@ function Soil() {
     message: 'Use the pump buttons below to change the relay value manually.',
   })
   const [isWritingRelay, setIsWritingRelay] = useState(false)
-  const lastAutoRelayRef = useRef(null)
   const previousModeRef = useRef(controlMode)
   const modeSwitchingRef = useRef(false)
 
@@ -413,7 +402,6 @@ function Soil() {
           return
         }
 
-        lastAutoRelayRef.current = 0
         setControlNotice({
           tone: 'idle',
           title: controlMode === 'manual' ? 'Manual mode active' : 'Automatic mode active',
@@ -460,7 +448,7 @@ function Soil() {
   }, [controlMode])
 
   useEffect(() => {
-    if (controlMode !== 'auto' || modeSwitchingRef.current || isWritingRelay) {
+    if (controlMode !== 'auto' || modeSwitchingRef.current) {
       return
     }
 
@@ -470,6 +458,10 @@ function Soil() {
       message: soilAutomation.message,
     })
 
+    if (isWritingRelay) {
+      return
+    }
+
     if (soilAutomation.relayValue === null) {
       return
     }
@@ -477,11 +469,6 @@ function Soil() {
     const currentRelayValue = toNumericValue(sensorData.Relay)
 
     if (currentRelayValue === soilAutomation.relayValue) {
-      lastAutoRelayRef.current = soilAutomation.relayValue
-      return
-    }
-
-    if (lastAutoRelayRef.current === soilAutomation.relayValue) {
       return
     }
 
@@ -497,7 +484,6 @@ function Soil() {
           return
         }
 
-        lastAutoRelayRef.current = soilAutomation.relayValue
         setControlNotice({
           tone: soilAutomation.tone,
           title: `Automatic mode: ${soilAutomation.label}`,
@@ -514,9 +500,7 @@ function Soil() {
           message: error.message,
         })
       } finally {
-        if (!isCancelled) {
-          setIsWritingRelay(false)
-        }
+        setIsWritingRelay(false)
       }
     }
 
@@ -679,8 +663,7 @@ function Soil() {
                 <p>Automatic mode checks soil and controls the relay using these rules.</p>
                 <div className="rule-list">
                   <span className="rule-pill">0 to 40: Dry, pump on</span>
-                  <span className="rule-pill">41 to 60: Normal, pump off</span>
-                  <span className="rule-pill">61 to 100: Wet, pump off</span>
+                  <span className="rule-pill">Above 40: Wet, pump off</span>
                 </div>
               </div>
             </div>

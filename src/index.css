@@ -1,0 +1,91 @@
+:root {
+  --bg-top: #fff7ed;
+  --bg-bottom: #e0f2fe;
+  --panel-bg: rgba(255, 255, 255, 0.88);
+  --panel-border: rgba(15, 23, 42, 0.08);
+  --text-main: #11233b;
+  --muted: #64748b;
+  --muted-strong: #475569;
+  --shadow-soft:
+    0 22px 60px rgba(15, 23, 42, 0.1),
+    0 8px 20px rgba(15, 23, 42, 0.06);
+  --mint: #14b8a6;
+  --amber: #f59e0b;
+  --sky: #2563eb;
+  --coral: #f97316;
+  --violet: #8b5cf6;
+  --surface: #ffffff;
+  --sans: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
+  --display: 'Aptos Display', 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --mono: 'Cascadia Code', 'Consolas', monospace;
+
+  font-family: var(--sans);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at top left, rgba(249, 115, 22, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 30%),
+    radial-gradient(circle at center left, rgba(20, 184, 166, 0.08), transparent 24%),
+    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: var(--sans);
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at top left, rgba(249, 115, 22, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 30%),
+    radial-gradient(circle at center left, rgba(20, 184, 166, 0.08), transparent 24%),
+    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.26) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.26) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(circle at center, black, transparent 88%);
+  pointer-events: none;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+code {
+  font-family: var(--mono);
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+}
+
+#root {
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  min-height: 100vh;
+}

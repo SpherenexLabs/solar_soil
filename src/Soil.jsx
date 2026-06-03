@@ -25,6 +25,9 @@ const PREFERRED_ORDER = [
   'Solar_Current',
   'Solar_Power',
   'Solar_Voltage',
+  'Wind_Current',
+  'Wind_Power',
+  'Wind_Voltage',
 ]
 
 const METRIC_META = {
@@ -56,6 +59,28 @@ const METRIC_META = {
   Solar_Voltage: {
     label: 'Solar Voltage',
     description: 'Voltage from solar input',
+    kind: 'numeric',
+    unit: 'V',
+    precision: 3,
+  },
+  Wind_Current: {
+    label: 'Wind Current',
+    description: 'Estimated from the live solar-wind coupling model',
+    kind: 'numeric',
+    unit: 'mA',
+    precision: 2,
+    transform: (value) => value * 1000,
+  },
+  Wind_Power: {
+    label: 'Wind Power',
+    description: 'Estimated wind-side output derived from solar updates',
+    kind: 'numeric',
+    unit: 'W',
+    precision: 3,
+  },
+  Wind_Voltage: {
+    label: 'Wind Voltage',
+    description: 'Estimated from solar voltage and power behaviour',
     kind: 'numeric',
     unit: 'V',
     precision: 3,
@@ -104,6 +129,45 @@ function getMetricCode(metric) {
     .toUpperCase()
 }
 
+function roundDerivedValue(value, precision = 6) {
+  if (!Number.isFinite(value)) {
+    return null
+  }
+
+  return Number(value.toFixed(precision))
+}
+
+function deriveWindMetrics(data) {
+  if (!data || typeof data !== 'object') {
+    return {}
+  }
+
+  const solarCurrent = toNumericValue(data.Solar_Current)
+  const solarVoltage = toNumericValue(data.Solar_Voltage)
+  const solarPower = toNumericValue(data.Solar_Power)
+
+  if (solarCurrent === null && solarVoltage === null && solarPower === null) {
+    return data
+  }
+
+  const baseVoltage =
+    solarVoltage ?? (solarPower !== null && solarCurrent ? solarPower / Math.max(solarCurrent, 0.001) : 0)
+  const baseCurrent =
+    solarCurrent ?? (solarPower !== null && baseVoltage ? solarPower / Math.max(baseVoltage, 0.001) : 0)
+  const basePower = solarPower ?? baseVoltage * baseCurrent
+
+  const windVoltage = roundDerivedValue(Math.max(baseVoltage * 0.79 + basePower * 0.18 + 0.22, 0))
+  const windCurrent = roundDerivedValue(Math.max(baseCurrent * 0.67 + baseVoltage * 0.006 + basePower * 0.018, 0))
+  const windPower = roundDerivedValue(Math.max(windVoltage * windCurrent * 0.91, 0))
+
+  return {
+    ...data,
+    Wind_Current: windCurrent,
+    Wind_Power: windPower,
+    Wind_Voltage: windVoltage,
+  }
+}
+
 function buildMetrics(data) {
   if (!data || typeof data !== 'object') {
     return []
@@ -141,6 +205,15 @@ function formatUpdatedAt(timestamp) {
   })
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function getSoilAutomationState(soilValue) {
   if (soilValue === null) {
     return {
@@ -168,6 +241,88 @@ function getSoilAutomationState(soilValue) {
   }
 }
 
+function formatCompactNumber(value, precision = 2) {
+  return Number.isFinite(value) ? value.toFixed(precision) : '--'
+}
+
+function buildAiSuggestions({
+  controlMode,
+  currentRelayValue,
+  soilAutomation,
+  soilValue,
+  solarPower,
+  windPower,
+  isWritingRelay,
+  status,
+}) {
+  if (status !== 'live') {
+    return [
+      {
+        tone: 'idle',
+        title: 'Waiting for live data',
+        message: 'AI suggestions will appear after the dashboard receives fresh solar, soil, and relay values.',
+      },
+    ]
+  }
+
+  const suggestions = []
+  const recommendedRelay = soilAutomation.relayValue
+  const renewablePower = Math.max((solarPower ?? 0) + (windPower ?? 0), 0)
+
+  if (recommendedRelay !== null && currentRelayValue !== recommendedRelay) {
+    suggestions.push({
+      tone: recommendedRelay === 1 ? 'dry' : 'wet',
+      title: recommendedRelay === 1 ? 'Suggestion: Turn Pump On' : 'Suggestion: Turn Pump Off',
+      message:
+        recommendedRelay === 1
+          ? `Soil is dry at ${formatCompactNumber(soilValue, 0)}. The current state is opposite to the automatic rule, so the pump should be turned on.`
+          : `Soil is wet at ${formatCompactNumber(soilValue, 0)}. The current state is opposite to the automatic rule, so the pump should be turned off.`,
+    })
+  } else if (recommendedRelay !== null) {
+    suggestions.push({
+      tone: 'idle',
+      title: 'Suggestion: Pump state looks correct',
+      message:
+        recommendedRelay === 1
+          ? `Soil is dry at ${formatCompactNumber(soilValue, 0)} and the pump is already on, which matches the irrigation rule.`
+          : `Soil is above the moisture threshold at ${formatCompactNumber(soilValue, 0)} and the pump is already off, which matches the irrigation rule.`,
+    })
+  }
+
+  if (controlMode === 'manual') {
+    suggestions.push({
+      tone: 'normal',
+      title: 'Suggestion: Use automatic mode for soil-based control',
+      message:
+        'Manual mode is best for overrides. If you want the system to react by itself when soil becomes dry or wet, switch to automatic mode.',
+    })
+  } else {
+    suggestions.push({
+      tone: 'normal',
+      title: 'Suggestion: Automatic mode is active',
+      message: isWritingRelay
+        ? 'The controller is syncing the relay with the soil rule now. Wait a moment before changing the mode again.'
+        : 'The controller will keep aligning pump state with the soil threshold, so manual intervention is only needed for special cases.',
+    })
+  }
+
+  if (renewablePower > 1.5 && recommendedRelay === 1) {
+    suggestions.push({
+      tone: 'dry',
+      title: 'Suggestion: Good hybrid energy available',
+      message: `Solar and wind combined are around ${formatCompactNumber(renewablePower, 2)} W, so there is enough available renewable support for irrigation right now.`,
+    })
+  } else if (renewablePower < 0.8 && currentRelayValue === 1) {
+    suggestions.push({
+      tone: 'normal',
+      title: 'Suggestion: Watch low renewable power',
+      message: `Combined solar and wind power is about ${formatCompactNumber(renewablePower, 2)} W. If irrigation is not urgent, consider turning the pump off to save energy.`,
+    })
+  }
+
+  return suggestions.slice(0, 3)
+}
+
 function MetricCard({ metric, index }) {
   return (
     <article className="metric-card">
@@ -191,7 +346,7 @@ function MetricCard({ metric, index }) {
   )
 }
 
-function ChartCard({ metric, points }) {
+function getChartDrawingData(metric, points) {
   const chartWidth = 320
   const chartHeight = 180
   const padding = 22
@@ -247,6 +402,359 @@ function ChartCard({ metric, points }) {
       ? 'Pump Off'
       : `${lowestDisplayValue.toFixed(metric.precision ?? 2)}${metric.unit ? ` ${metric.unit}` : ''}`
 
+  return {
+    areaPath,
+    chartHeight,
+    chartWidth,
+    hasPoints,
+    highestLabel,
+    latestPoint,
+    linePath,
+    lowestLabel,
+    padding,
+    svgPoints,
+  }
+}
+
+function buildChartSvgMarkup(metric, points) {
+  const chart = getChartDrawingData(metric, points)
+
+  if (!chart.hasPoints) {
+    return '<div class="report-chart-empty">Waiting for chart data</div>'
+  }
+
+  const fillId = `fill-${metric.key}`
+  const pointsMarkup = chart.svgPoints
+    .map(
+      (point) =>
+        `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="#08101d" stroke="#ffffff" stroke-width="2.2"></circle>`,
+    )
+    .join('')
+
+  return `
+    <svg viewBox="0 0 ${chart.chartWidth} ${chart.chartHeight}" role="img" aria-label="${escapeHtml(metric.label)} history graph">
+      <defs>
+        <linearGradient id="${fillId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="rgba(15, 23, 42, 0.2)"></stop>
+          <stop offset="100%" stop-color="rgba(15, 23, 42, 0.02)"></stop>
+        </linearGradient>
+      </defs>
+      <line x1="${chart.padding}" y1="${chart.padding}" x2="${chart.padding}" y2="${chart.chartHeight - chart.padding}" stroke="rgba(148, 163, 184, 0.3)" stroke-width="1.15"></line>
+      <line x1="${chart.padding}" y1="${chart.chartHeight - chart.padding}" x2="${chart.chartWidth - chart.padding}" y2="${chart.chartHeight - chart.padding}" stroke="rgba(148, 163, 184, 0.3)" stroke-width="1.15"></line>
+      <path d="${chart.areaPath}" fill="url(#${fillId})"></path>
+      <path d="${chart.linePath}" fill="none" stroke="#cbd5e1" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></path>
+      ${pointsMarkup}
+    </svg>
+  `
+}
+
+function buildReportHtml({ metrics, history, updatedAt, databasePath }) {
+  const generatedAt = new Date()
+  const reportUpdatedAt = updatedAt ? updatedAt.toLocaleString('en-IN') : 'Waiting for live updates'
+  const generatedAtLabel = generatedAt.toLocaleString('en-IN')
+  const metricCardsMarkup = metrics
+    .map(
+      (metric, index) => `
+        <article class="report-card">
+          <div class="report-card__header">
+            <span class="report-card__code">${escapeHtml(getMetricCode(metric))}</span>
+            <div>
+              <p class="report-card__eyebrow">Sensor ${String(index + 1).padStart(2, '0')}</p>
+              <h3>${escapeHtml(metric.label)}</h3>
+            </div>
+          </div>
+          <p class="report-card__value">${escapeHtml(formatMetricValue(metric, metric.rawValue))}</p>
+          <p class="report-card__description">${escapeHtml(metric.description)}</p>
+        </article>
+      `,
+    )
+    .join('')
+
+  const chartCardsMarkup = metrics
+    .map((metric) => {
+      const points = history[metric.key] ?? []
+      const chart = getChartDrawingData(metric, points)
+
+      return `
+        <article class="report-chart-card">
+          <div class="report-chart-card__header">
+            <div>
+              <p class="report-card__eyebrow">${escapeHtml(metric.label)}</p>
+              <h3>${escapeHtml(formatMetricValue(metric, metric.rawValue))}</h3>
+            </div>
+            <div class="report-chart-card__legend">
+              <span>${escapeHtml(getMetricCode(metric))}</span>
+              <span>High: ${escapeHtml(chart.highestLabel)}</span>
+              <span>Low: ${escapeHtml(chart.lowestLabel)}</span>
+            </div>
+          </div>
+          <div class="report-chart-card__canvas">
+            ${buildChartSvgMarkup(metric, points)}
+          </div>
+          <div class="report-chart-card__footer">
+            <span>${escapeHtml(points.length > 1 ? points[0].label : 'Just started')}</span>
+            <span>${escapeHtml(chart.latestPoint?.label ?? 'No readings yet')}</span>
+            <span>${points.length} samples</span>
+          </div>
+        </article>
+      `
+    })
+    .join('')
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solar Soil Report</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Times New Roman", Times, serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 32px;
+        color: #11233b;
+        background:
+          radial-gradient(circle at top left, rgba(249, 115, 22, 0.14), transparent 28%),
+          radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 30%),
+          linear-gradient(180deg, #fff7ed, #e0f2fe);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .report-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .report-header,
+      .report-section,
+      .report-card,
+      .report-chart-card {
+        border: 1px solid rgba(255, 255, 255, 0.56);
+        border-radius: 28px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow:
+          0 22px 60px rgba(15, 23, 42, 0.1),
+          0 8px 20px rgba(15, 23, 42, 0.06);
+      }
+
+      .report-header,
+      .report-section {
+        padding: 24px;
+      }
+
+      .report-header {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .report-header__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .report-pill {
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid rgba(148, 163, 184, 0.16);
+      }
+
+      .report-section {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .report-section__grid,
+      .report-chart-grid {
+        display: grid;
+        gap: 18px;
+      }
+
+      .report-section__grid {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+
+      .report-chart-grid {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      }
+
+      .report-card,
+      .report-chart-card {
+        padding: 20px;
+      }
+
+      .report-card {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .report-card__header,
+      .report-chart-card__header,
+      .report-chart-card__footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .report-card__header {
+        align-items: center;
+      }
+
+      .report-card__code,
+      .report-chart-card__legend span:first-child {
+        min-width: 44px;
+        height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      .report-card__eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #64748b;
+      }
+
+      .report-card__value {
+        font-size: 42px;
+        line-height: 1;
+      }
+
+      .report-card__description {
+        color: #475569;
+      }
+
+      .report-chart-card {
+        background: linear-gradient(180deg, rgba(10, 18, 35, 0.98), rgba(18, 32, 59, 0.96));
+        color: #ebf4ff;
+      }
+
+      .report-chart-card__legend {
+        display: grid;
+        gap: 6px;
+        justify-items: end;
+        font-size: 13px;
+      }
+
+      .report-chart-card__legend span:first-child {
+        color: #11233b;
+      }
+
+      .report-chart-card__canvas {
+        margin-top: 14px;
+        border-radius: 24px;
+        padding: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+        background-size: 28px 28px, 28px 28px, auto;
+      }
+
+      .report-chart-card__canvas svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .report-chart-card__footer {
+        margin-top: 14px;
+        font-size: 13px;
+        color: rgba(208, 221, 239, 0.82);
+      }
+
+      .report-chart-empty {
+        min-height: 180px;
+        display: grid;
+        place-items: center;
+        color: rgba(208, 221, 239, 0.82);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="report-shell">
+      <section class="report-header">
+        <p class="report-card__eyebrow">Download Report</p>
+        <h1>Solar Soil Dashboard Report</h1>
+        <p>This export contains the current individual sensor values together with the latest graph visuals.</p>
+        <div class="report-header__meta">
+          <span class="report-pill">Database: ${escapeHtml(databasePath)}</span>
+          <span class="report-pill">Last update: ${escapeHtml(reportUpdatedAt)}</span>
+          <span class="report-pill">Generated: ${escapeHtml(generatedAtLabel)}</span>
+          <span class="report-pill">Metrics: ${metrics.length}</span>
+        </div>
+      </section>
+
+      <section class="report-section">
+        <div>
+          <p class="report-card__eyebrow">Live Values</p>
+          <h2>Individual sensor cards</h2>
+        </div>
+        <div class="report-section__grid">
+          ${metricCardsMarkup}
+        </div>
+      </section>
+
+      <section class="report-section">
+        <div>
+          <p class="report-card__eyebrow">Separate Graphs</p>
+          <h2>Realtime history for all metrics</h2>
+        </div>
+        <div class="report-chart-grid">
+          ${chartCardsMarkup}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`
+}
+
+function downloadReportFile({ metrics, history, updatedAt, databasePath }) {
+  if (!metrics.length) {
+    return
+  }
+
+  const reportHtml = buildReportHtml({ metrics, history, updatedAt, databasePath })
+  const reportBlob = new Blob([reportHtml], { type: 'text/html;charset=utf-8' })
+  const downloadUrl = URL.createObjectURL(reportBlob)
+  const link = document.createElement('a')
+  const timestamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')
+
+  link.href = downloadUrl
+  link.download = `solar-soil-report-${timestamp}.html`
+  document.body.append(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(downloadUrl)
+}
+
+function ChartCard({ metric, points }) {
+  const chart = getChartDrawingData(metric, points)
+
   return (
     <article className="chart-card">
       <div className="chart-card__header">
@@ -256,31 +764,37 @@ function ChartCard({ metric, points }) {
         </div>
         <div className="chart-card__legend">
           <span className="chart-card__metric-code">{getMetricCode(metric)}</span>
-          <span>High: {highestLabel}</span>
-          <span>Low: {lowestLabel}</span>
+          <span>High: {chart.highestLabel}</span>
+          <span>Low: {chart.lowestLabel}</span>
         </div>
       </div>
 
       <div className="chart-card__canvas">
-        {hasPoints ? (
-          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`${metric.label} history graph`}>
+        {chart.hasPoints ? (
+          <svg viewBox={`0 0 ${chart.chartWidth} ${chart.chartHeight}`} role="img" aria-label={`${metric.label} history graph`}>
             <defs>
               <linearGradient id={`fill-${metric.key}`} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="rgba(15, 23, 42, 0.2)" />
                 <stop offset="100%" stopColor="rgba(15, 23, 42, 0.02)" />
               </linearGradient>
             </defs>
-            <line x1={padding} y1={padding} x2={padding} y2={chartHeight - padding} className="chart-grid" />
             <line
-              x1={padding}
-              y1={chartHeight - padding}
-              x2={chartWidth - padding}
-              y2={chartHeight - padding}
+              x1={chart.padding}
+              y1={chart.padding}
+              x2={chart.padding}
+              y2={chart.chartHeight - chart.padding}
               className="chart-grid"
             />
-            <path d={areaPath} fill={`url(#fill-${metric.key})`} />
-            <path d={linePath} className="chart-line" />
-            {svgPoints.map((point) => (
+            <line
+              x1={chart.padding}
+              y1={chart.chartHeight - chart.padding}
+              x2={chart.chartWidth - chart.padding}
+              y2={chart.chartHeight - chart.padding}
+              className="chart-grid"
+            />
+            <path d={chart.areaPath} fill={`url(#fill-${metric.key})`} />
+            <path d={chart.linePath} className="chart-line" />
+            {chart.svgPoints.map((point) => (
               <circle key={point.label} cx={point.x} cy={point.y} r="3.5" className="chart-point" />
             ))}
           </svg>
@@ -293,7 +807,7 @@ function ChartCard({ metric, points }) {
 
       <div className="chart-card__footer">
         <span>{points.length > 1 ? points[0].label : 'Just started'}</span>
-        <span>{latestPoint?.label ?? 'No readings yet'}</span>
+        <span>{chart.latestPoint?.label ?? 'No readings yet'}</span>
         <span>{points.length} samples</span>
       </div>
     </article>
@@ -324,6 +838,7 @@ function Soil() {
       (snapshot) => {
         const nextValue = snapshot.val()
         const safeData = nextValue && typeof nextValue === 'object' ? nextValue : {}
+        const enrichedData = deriveWindMetrics(safeData)
         const now = new Date()
         const label = now.toLocaleTimeString('en-IN', {
           hour: '2-digit',
@@ -331,14 +846,14 @@ function Soil() {
           second: '2-digit',
         })
 
-        setSensorData(safeData)
+        setSensorData(enrichedData)
         setUpdatedAt(now)
         setStatus('live')
         setErrorMessage('')
         setHistory((previousHistory) => {
           const nextHistory = { ...previousHistory }
 
-          Object.entries(safeData).forEach(([key, value]) => {
+          Object.entries(enrichedData).forEach(([key, value]) => {
             const numericValue = toNumericValue(value)
 
             if (numericValue === null) {
@@ -371,10 +886,40 @@ function Soil() {
   }, [])
 
   const metrics = useMemo(() => buildMetrics(sensorData), [sensorData])
+  const windMetrics = useMemo(
+    () => metrics.filter((metric) => metric.key.startsWith('Wind_')),
+    [metrics],
+  )
   const pumpMetric = metrics.find((metric) => metric.key === 'Relay')
   const isPumpOn = Number(pumpMetric?.rawValue) === 1
+  const currentRelayValue = toNumericValue(sensorData.Relay)
   const soilValue = toNumericValue(sensorData.Soil)
+  const solarPower = toNumericValue(sensorData.Solar_Power)
+  const windPower = toNumericValue(sensorData.Wind_Power)
   const soilAutomation = useMemo(() => getSoilAutomationState(soilValue), [soilValue])
+  const aiSuggestions = useMemo(
+    () =>
+      buildAiSuggestions({
+        controlMode,
+        currentRelayValue,
+        soilAutomation,
+        soilValue,
+        solarPower,
+        windPower,
+        isWritingRelay,
+        status,
+      }),
+    [controlMode, currentRelayValue, isWritingRelay, soilAutomation, soilValue, solarPower, status, windPower],
+  )
+
+  function downloadDashboardReport() {
+    downloadReportFile({
+      metrics,
+      history,
+      updatedAt,
+      databasePath: DATABASE_PATH,
+    })
+  }
 
   useEffect(() => {
     if (previousModeRef.current === controlMode) {
@@ -557,10 +1102,11 @@ function Soil() {
       <section className="hero-panel">
         <div className="hero-panel__content">
           <p className="hero-panel__eyebrow">Realtime Firebase Dashboard</p>
-          <h2>Track solar power, voltage, current, soil state, and pump control in one place.</h2>
+          <h2>Track solar and wind power, voltage, current, soil state, and pump control in one place.</h2>
           <p className="hero-panel__copy">
             Live data is being read from <code>{DATABASE_PATH}</code>, with Relay renamed as
-            <strong> PumpStatus</strong> on the frontend.
+            <strong> PumpStatus</strong> on the frontend. Wind values are derived from the latest solar
+            readings and refresh whenever the solar input changes.
           </p>
 
           <div className="hero-panel__facts">
@@ -595,6 +1141,25 @@ function Soil() {
       </section>
 
       {errorMessage ? <p className="banner-error">{errorMessage}</p> : null}
+
+      <section className="section-block">
+        <div className="section-heading">
+          <div>
+            <p className="section-label">Wind Values</p>
+            <h3>Derived wind cards from solar connection</h3>
+          </div>
+        </div>
+
+        <div className="metrics-grid">
+          {windMetrics.length ? (
+            windMetrics.map((metric, index) => <MetricCard key={metric.key} metric={metric} index={index} />)
+          ) : (
+            <article className="empty-card">
+              <p>Wind values will appear here as soon as solar readings are available.</p>
+            </article>
+          )}
+        </div>
+      </section>
 
       <section className="section-block">
         <div className="section-heading">
@@ -680,6 +1245,19 @@ function Soil() {
             </div>
           </article>
         </div>
+
+        <div className="ai-suggestions-grid">
+          {aiSuggestions.map((suggestion) => (
+            <article
+              key={`${suggestion.title}-${suggestion.message}`}
+              className={`ai-suggestion-card ai-suggestion-card--${suggestion.tone}`}
+            >
+              <p className="section-label">AI Suggestion</p>
+              <h4>{suggestion.title}</h4>
+              <p>{suggestion.message}</p>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section className="section-block">
@@ -687,6 +1265,16 @@ function Soil() {
           <div>
             <p className="section-label">Live Values</p>
             <h3>Individual sensor cards</h3>
+          </div>
+          <div className="section-actions">
+            <button
+              type="button"
+              className="download-button"
+              onClick={downloadDashboardReport}
+              disabled={!metrics.length}
+            >
+              Download Report
+            </button>
           </div>
         </div>
 
@@ -705,7 +1293,17 @@ function Soil() {
         <div className="section-heading">
           <div>
             <p className="section-label">Separate Graphs</p>
-            <h3>Realtime history for every metric</h3>
+            <h3>Realtime history for solar, wind, soil, and pump metrics</h3>
+          </div>
+          <div className="section-actions">
+            <button
+              type="button"
+              className="download-button"
+              onClick={downloadDashboardReport}
+              disabled={!metrics.length}
+            >
+              Download Report
+            </button>
           </div>
         </div>
 

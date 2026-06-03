@@ -15,8 +15,8 @@
   --coral: #f97316;
   --violet: #8b5cf6;
   --surface: #ffffff;
-  --sans: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
-  --display: 'Aptos Display', 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --sans: 'Times New Roman', Times, serif;
+  --display: 'Times New Roman', Times, serif;
   --mono: 'Cascadia Code', 'Consolas', monospace;
 
   font-family: var(--sans);

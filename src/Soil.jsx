@@ -886,10 +886,6 @@ function Soil() {
   }, [])
 
   const metrics = useMemo(() => buildMetrics(sensorData), [sensorData])
-  const windMetrics = useMemo(
-    () => metrics.filter((metric) => metric.key.startsWith('Wind_')),
-    [metrics],
-  )
   const pumpMetric = metrics.find((metric) => metric.key === 'Relay')
   const isPumpOn = Number(pumpMetric?.rawValue) === 1
   const currentRelayValue = toNumericValue(sensorData.Relay)
@@ -1141,25 +1137,6 @@ function Soil() {
       </section>
 
       {errorMessage ? <p className="banner-error">{errorMessage}</p> : null}
-
-      <section className="section-block">
-        <div className="section-heading">
-          <div>
-            <p className="section-label">Wind Values</p>
-            <h3>Derived wind cards from solar connection</h3>
-          </div>
-        </div>
-
-        <div className="metrics-grid">
-          {windMetrics.length ? (
-            windMetrics.map((metric, index) => <MetricCard key={metric.key} metric={metric} index={index} />)
-          ) : (
-            <article className="empty-card">
-              <p>Wind values will appear here as soon as solar readings are available.</p>
-            </article>
-          )}
-        </div>
-      </section>
 
       <section className="section-block">
         <div className="section-heading">

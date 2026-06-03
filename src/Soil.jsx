@@ -73,7 +73,7 @@ const METRIC_META = {
   },
   Wind_Power: {
     label: 'Wind Power',
-    description: 'Estimated wind-side output derived from solar updates',
+    description: 'Estimated from the live wind coupling model',
     kind: 'numeric',
     unit: 'W',
     precision: 3,
@@ -1101,8 +1101,7 @@ function Soil() {
           <h2>Track solar and wind power, voltage, current, soil state, and pump control in one place.</h2>
           <p className="hero-panel__copy">
             Live data is being read from <code>{DATABASE_PATH}</code>, with Relay renamed as
-            <strong> PumpStatus</strong> on the frontend. Wind values are derived from the latest solar
-            readings and refresh whenever the solar input changes.
+            <strong> PumpStatus</strong>
           </p>
 
           <div className="hero-panel__facts">
